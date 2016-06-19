@@ -20,13 +20,9 @@ log = logging.getLogger(__name__)
 
 try:
     from html import unescape  # py3.5
-except:
-    try:
-        from html.parser import HTMLParser  # py3.4
-    except ImportError:
-        from HTMLParser import HTMLParser  # py2
-    finally:
-        unescape = HTMLParser().unescape
+except ImportError:
+    from html.parser import HTMLParser  # py3.4
+    unescape = HTMLParser().unescape
 
 
 # chr that should not count as a space
@@ -221,7 +217,7 @@ class Table(object):
                 # Account for multiline cells
                 cnt = str(txt).count(NEXT_ROW)
                 if cnt > 0:
-                    length = length - cnt*len(NEXT_ROW)
+                    length -= cnt * len(NEXT_ROW)
                 if maxes[i] < length:
                     maxes[i] = length
 
@@ -331,7 +327,7 @@ class BorderlessTable(object):
                 # Account for multiline cells
                 cnt = str(txt).count(NEXT_ROW)
                 if cnt > 0:
-                    length = length - cnt*len(NEXT_ROW)
+                    length -= cnt * len(NEXT_ROW)
                 if maxes[i] < length:
                     maxes[i] = length
 

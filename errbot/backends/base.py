@@ -2,26 +2,23 @@ import io
 import logging
 import random
 import time
-from typing import Any, Mapping, BinaryIO, List, Union, Sequence, Tuple
+from typing import Any, Mapping, BinaryIO, List, Sequence, Tuple
 from abc import abstractproperty, abstractmethod
 from collections import deque, defaultdict
 
 import inspect
 
+from errbot.utils import deprecated
+
 try:
     from abc import ABC
 except ImportError:
-    #  3.3 compatibility
+    #  3.3 backward compatibility
     from abc import ABCMeta
 
     class ABC(metaclass=ABCMeta):
-        """Helper class that provides a standard way to create an ABC using
-        inheritance.
-        """
         pass
 
-
-from errbot.utils import compat_str, deprecated
 
 # Can't use __name__ because of Yapsy
 log = logging.getLogger('errbot.backends.base')
@@ -77,6 +74,7 @@ class Person(Identifier):
     def fullname(self) -> str:
         """
         Some backends have the full name of a user.
+
         :return: the fullname of this user if available.
         """
         pass
@@ -87,6 +85,7 @@ class RoomOccupant(Identifier):
     def room(self) -> Any:  # this is oom defined below
         """
         Some backends have the full name of a user.
+
         :return: the fullname of this user if available.
         """
         pass
@@ -245,7 +244,7 @@ class Message(object):
         :param flow:
             The flow in which this message has been triggered.
         """
-        self._body = compat_str(body)
+        self._body = body
         self._from = frm
         self._to = to
         self._delayed = delayed
@@ -456,19 +455,27 @@ class Presence(object):
         self._status = status
         self._message = message
 
+    @deprecated
     @property
     def nick(self) -> str:
-        """ Returns a plain string of the presence nick.
-            (In some chatroom implementations, you cannot know the real identifier
-            of a person in it).
-            Can return None but then identifier won't be None.
+        """
+        @use identifier.nick
+        :return:
         """
         return self._identifier.nick
 
+    @deprecated
     @property
     def occupant(self) -> RoomOccupant:
-        """ Returns the identifier of the event.
-            Can be None *only* if chatroom is not None
+        """ @use identifier
+        """
+        return self._identifier
+
+    @property
+    def identifier(self) -> Identifier:
+        """
+        Identifier for whom its status changed. It can be a RoomOccupant or a Person.
+        :return: the person or roomOccupant
         """
         return self._identifier
 

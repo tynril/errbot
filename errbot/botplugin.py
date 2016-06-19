@@ -5,15 +5,11 @@ from types import ModuleType
 from typing import Tuple, Callable, Mapping, Sequence
 from io import IOBase
 
-from .utils import recurse_check_structure, PY2
+from .utils import recurse_check_structure
 from .storage import StoreMixin, StoreNotOpenError
 from errbot.backends.base import Message, Presence, Stream, Room, Identifier, ONLINE, Card
 
 log = logging.getLogger(__name__)
-
-
-def compat_ascii(s):
-    return s.encode('ascii') if PY2 and isinstance(s, unicode) else s
 
 
 class CommandError(Exception):
@@ -64,7 +60,7 @@ class Command(object):
             cmd_kwargs = {}
         if cmd_args is None:
             cmd_args = ()
-        function.__name__ = compat_ascii(name)
+        function.__name__ = name
         if doc:
             function.__doc__ = doc
         self.definition = cmd_type(*((function,) + cmd_args), **cmd_kwargs)
@@ -239,9 +235,7 @@ class BotPluginBase(StoreMixin):
         """
         if name in self._dynamic_plugins:
             raise ValueError('Dynamic plugin %s already created.')
-        plugin_class = type(compat_ascii(name),
-                            (BotPlugin,),
-                            {command.name: command.definition for command in commands})
+        plugin_class = type(name, (BotPlugin,), {command.name: command.definition for command in commands})
         plugin_class.__errdoc__ = doc
         plugin = plugin_class(self._bot)
         self._dynamic_plugins[name] = plugin
@@ -433,7 +427,7 @@ class BotPlugin(BotPluginBase):
         """
         Send a warning to the administrators of the bot.
 
-        :param warning: The mardown-formatted text of the message to send.
+        :param warning: The markdown-formatted text of the message to send.
         """
         self._bot.warn_admins(warning)
 
@@ -456,7 +450,7 @@ class BotPlugin(BotPluginBase):
         if not isinstance(identifier, Identifier):
             raise ValueError("identifier needs to be of type Identifier, the old string behavior is not supported")
         if message_type is not None:
-            self.log.warn("send message_type is DEPRECATED. Either pass a user identifier or a room to send.")
+            self.log.warning("send message_type is DEPRECATED. Either pass a user identifier or a room to send.")
         return self._bot.send(identifier, text, in_reply_to, groupchat_nick_reply)
 
     def send_card(self,

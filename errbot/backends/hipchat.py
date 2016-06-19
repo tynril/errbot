@@ -1,23 +1,17 @@
 # -*- coding: utf-8 -*-
 # vim: ts=4:sw=4
 import logging
+import re
 import sys
-try:
-    from functools import lru_cache
-except ImportError:
-    from backports.functools_lru_cache import lru_cache
+from functools import lru_cache
+
+from errbot.backends.base import Room, RoomDoesNotExistError, RoomOccupant
+from errbot.backends.xmpp import XMPPRoomOccupant, XMPPBackend, XMPPConnection
 
 from markdown import Markdown
 from markdown.extensions.extra import ExtraExtension
 from markdown.extensions import Extension
 from markdown.treeprocessors import Treeprocessor
-
-from errbot.backends.base import Room, RoomDoesNotExistError, Message, RoomOccupant
-from errbot.backends.xmpp import (
-    XMPPPerson, XMPPRoomOccupant,
-    XMPPBackend, XMPPConnection,
-    split_identifier
-)
 
 
 # Can't use __name__ because of Yapsy
@@ -28,9 +22,9 @@ try:
 except ImportError:
     log.exception("Could not start the HipChat backend")
     log.fatal(
-        "You need to install the hypchat package in order to use the HipChat "
-        "back-end. You should be able to install this package using: "
-        "pip install hypchat"
+        "You need to install the hipchat support in order to use the HipChat.\n "
+        "You should be able to install this package using:\n"
+        "pip install errbot[hipchat]"
     )
     sys.exit(1)
 
@@ -309,7 +303,7 @@ class HipChatRoom(Room):
         """
         Invite one or more people into the room.
 
-        :*args:
+        :param args:
             One or more people to invite into the room. May be the
             mention name (beginning with an @) or "FirstName LastName"
             of the user you wish to invite.
@@ -405,6 +399,16 @@ class HipchatBackend(XMPPBackend):
             server=self.server
         )
 
+    def callback_message(self, mess):
+        super().callback_message(mess)
+        possible_mentions = re.findall(r'@\w+', mess.body)
+        people = list(
+            filter(None.__ne__, [self._find_user(mention[1:], 'mention_name') for mention in possible_mentions])
+        )
+
+        if people:
+            self.callback_mention(mess, people)
+
     @property
     def mode(self):
         return 'hipchat'
@@ -462,8 +466,7 @@ class HipchatBackend(XMPPBackend):
             # so we request the user's proper JID through their API and use that here
             # so that private responses originating from a room (IE, DIVERT_TO_PRIVATE)
             # work correctly.
-            node, domain, resource = split_identifier(self.username_to_jid(response.to.client))
-            response.to = XMPPPerson(node=node, domain=domain, resource=resource)
+            response.to = self._find_user(response.to.client, 'name')
         return response
 
     def send_card(self, card):
@@ -530,16 +533,22 @@ class HipchatBackend(XMPPBackend):
         room._requests.post(room.url + '/notification', data=data)  # noqa
 
     @lru_cache(1024)
-    def username_to_jid(self, username):
+    def _find_user(self, name, criteria):
         """
-        Convert a HipChat username to their JID
+        Find a specific hipchat user with a simple criteria like 'name' or 'mention_name' and returns
+        its jid.
+
+        :param name: the value you seek.
+        :param criteria: 'name' or 'mention_name'
+        :return: the matching XMPPPerson or None if not found.
         """
-        try:
-            user = [u for u in self.conn.users if u['name'] == username][0]
-            userdetail = self.conn.hypchat.get_user("%s" % user['id'])
-            return userdetail['xmpp_jid']
-        except IndexError:
+        users = [u for u in self.conn.users if u[criteria] == name]
+        if not users:
             return None
+        userdetail = self.conn.hypchat.get_user("%s" % users[0]['id'])
+        identifier = self.build_identifier(userdetail['xmpp_jid'])
+
+        return identifier
 
     def prefix_groupchat_reply(self, message, identifier):
         message.body = '@{0}: {1}'.format(identifier.nick, message.body)

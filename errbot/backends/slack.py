@@ -1,49 +1,33 @@
 import collections
+import copyreg
 import json
 import logging
 import re
 import time
 import sys
 import pprint
+from functools import lru_cache
 
 from errbot.backends.base import Message, Presence, ONLINE, AWAY, Room, RoomError, RoomDoesNotExistError, \
     UserDoesNotExistError, RoomOccupant, Person, Card
 from errbot.core import ErrBot
-from errbot.utils import PY3, split_string_after
+from errbot.utils import split_string_after
 from errbot.rendering.slack import slack_markdown_converter
 
 
 # Can't use __name__ because of Yapsy
 log = logging.getLogger('errbot.backends.slack')
 
-try:
-    from functools import lru_cache
-except ImportError:
-    from backports.functools_lru_cache import lru_cache
+
 try:
     from slackclient import SlackClient
 except ImportError:
     log.exception("Could not start the Slack back-end")
     log.fatal(
-        "You need to install the slackclient package in order to use the Slack "
-        "back-end. You should be able to install this package using: "
-        "pip install slackclient"
+        "You need to install the slackclient support in order to use the Slack.\n"
+        "You can do `pip install errbot[slack]` to install it"
     )
     sys.exit(1)
-except SyntaxError:
-    if not PY3:
-        raise
-    log.exception("Could not start the Slack back-end")
-    log.fatal(
-        "I cannot start the Slack back-end because I cannot import the SlackClient. "
-        "Python 3 compatibility on SlackClient is still quite young, you may be "
-        "running an old version or perhaps they released a version with a Python "
-        "3 regression. As a last resort to fix this, you could try installing the "
-        "latest master version from them using: "
-        "pip install --upgrade https://github.com/slackhq/python-slackclient/archive/master.zip"
-    )
-    sys.exit(1)
-
 
 # The Slack client automatically turns a channel name into a clickable
 # link if you prefix it with a #. Other clients receive this link as a
@@ -198,6 +182,27 @@ class SlackRoomOccupant(RoomOccupant, SlackPerson):
 
 
 class SlackBackend(ErrBot):
+
+    @staticmethod
+    def _unpickle_identifier(identifier_str):
+        return SlackBackend.__build_identifier(identifier_str)
+
+    @staticmethod
+    def _pickle_identifier(identifier):
+        return SlackBackend._unpickle_identifier, (str(identifier),)
+
+    def _register_identifiers_pickling(self):
+        """
+        Register identifiers pickling.
+
+        As Slack needs live objects in its identifiers, we need to override their pickling behavior.
+        But for the unpickling to work we need to use bot.build_identifier, hence the bot parameter here.
+        But then we also need bot for the unpickling so we save it here at module level.
+        """
+        SlackBackend.__build_identifier = self.build_identifier
+        for cls in (SlackPerson, SlackRoomOccupant, SlackRoom):
+            copyreg.pickle(cls, SlackBackend._pickle_identifier, SlackBackend._unpickle_identifier)
+
     def __init__(self, config):
         super().__init__(config)
         identity = config.BOT_IDENTITY
@@ -212,6 +217,7 @@ class SlackBackend(ErrBot):
         self.sc = None  # Will be initialized in serve_once
         compact = config.COMPACT_OUTPUT if hasattr(config, 'COMPACT_OUTPUT') else False
         self.md = slack_markdown_converter(compact)
+        self._register_identifiers_pickling()
 
     def api_call(self, method, data=None, raise_errors=True):
         """
@@ -246,6 +252,25 @@ class SlackBackend(ErrBot):
             )
         return response
 
+    def update_alternate_prefixes(self):
+        """Converts BOT_ALT_PREFIXES to use the slack ID instead of name
+
+        Slack only acknowledges direct callouts `@username` in chat if referred
+        by using the ID of that user.
+        """
+        # convert BOT_ALT_PREFIXES to a list
+        try:
+            bot_prefixes = self.bot_config.BOT_ALT_PREFIXES.split(',')
+        except AttributeError:
+            bot_prefixes = list(self.bot_config.BOT_ALT_PREFIXES)
+
+        converted_prefixes = []
+        for prefix in bot_prefixes:
+            converted_prefixes.append('<@{0}>'.format(self.username_to_userid(prefix)))
+
+        self.bot_alt_prefixes = tuple(x.lower() for x in self.bot_config.BOT_ALT_PREFIXES)
+        log.debug('Converted bot_alt_prefixes: %s', self.bot_config.BOT_ALT_PREFIXES)
+
     def serve_once(self):
         self.sc = SlackClient(self.token)
         log.info("Verifying authentication token")
@@ -259,6 +284,10 @@ class SlackBackend(ErrBot):
         if self.sc.rtm_connect():
             log.info("Connected")
             self.reset_reconnection_count()
+
+            # Inject bot identity to alternative prefixes
+            self.update_alternate_prefixes()
+
             try:
                 while True:
                     for message in self.sc.rtm_read():
@@ -363,15 +392,18 @@ class SlackBackend(ErrBot):
         mentioned = []
 
         for word in text.split():
-            if word.startswith('<') or word.startswith('@') or word.startswith('#'):
+            if word.startswith('<') or word.startswith('@'):
                 try:
                     identifier = self.build_identifier(word.replace(':', ''))
                 except Exception as e:
                     log.debug("Tried to build an identifier from '%s' but got exception: %s", word, e)
                     continue
-                log.debug('Someone mentioned')
-                mentioned.append(identifier)
-                text = re.sub('<@[^>]*>:*', '@%s' % mentioned[-1].username, text)
+
+                # We only track mentions of persons.
+                if isinstance(identifier, SlackPerson):
+                    log.debug('Someone mentioned')
+                    mentioned.append(identifier)
+                    text = re.sub('<@[^>]*>:*', '@%s' % mentioned[-1].username, text)
 
         text = self.sanitize_uris(text)
 
@@ -404,6 +436,7 @@ class SlackBackend(ErrBot):
 
     def username_to_userid(self, name):
         """Convert a Slack user name to their user ID"""
+        name = name.lstrip('@')
         user = [user for user in self.sc.server.users if user.name == name]
         if not user:
             raise UserDoesNotExistError("Cannot find user %s" % name)
@@ -418,8 +451,7 @@ class SlackBackend(ErrBot):
 
     def channelname_to_channelid(self, name):
         """Convert a Slack channel name to its channel ID"""
-        if name.startswith('#'):
-            name = name[1:]
+        name = name.lstrip('#')
         channel = [channel for channel in self.sc.server.channels if channel.name == name]
         if not channel:
             raise RoomDoesNotExistError("No channel named %s exists" % name)
@@ -520,30 +552,30 @@ class SlackBackend(ErrBot):
             )
 
     def send_card(self, card: Card):
+        if isinstance(card.to, RoomOccupant):
+            card.to = card.to.room
+        to_humanreadable, to_channel_id = self._prepare_message(card)
+        attachment = {}
+        if card.summary:
+            attachment['pretext'] = card.summary
+        if card.title:
+            attachment['title'] = card.title
+        if card.link:
+            attachment['title_link'] = card.link
+        if card.image:
+            attachment['image_url'] = card.image
+        if card.thumbnail:
+            attachment['thumb_url'] = card.thumbnail
+        attachment['text'] = card.body
+
+        if card.color:
+            attachment['color'] = COLORS[card.color] if card.color in COLORS else card.color
+
+        if card.fields:
+            attachment['fields'] = [{'title': key, 'value': value, 'short': True} for key, value in card.fields]
+
+        data = {'text': ' ', 'channel': to_channel_id, 'attachments': json.dumps([attachment]), 'as_user': 'true'}
         try:
-            if isinstance(card.to, RoomOccupant):
-                card.to = card.to.room
-            to_humanreadable, to_channel_id = self._prepare_message(card)
-            attachment = {}
-            if card.summary:
-                attachment['pretext'] = card.summary
-            if card.title:
-                attachment['title'] = card.title
-            if card.link:
-                attachment['title_link'] = card.link
-            if card.image:
-                attachment['image_url'] = card.image
-            if card.thumbnail:
-                attachment['thumb_url'] = card.thumbnail
-            attachment['text'] = card.body
-
-            if card.color:
-                attachment['color'] = COLORS[card.color] if card.color in COLORS else card.color
-
-            if card.fields:
-                attachment['fields'] = [{'title': key, 'value': value, 'short': True} for key, value in card.fields]
-
-            data = {'text': ' ', 'channel': to_channel_id, 'attachments': json.dumps([attachment]), 'as_user': 'true'}
             log.debug('Sending data:\n%s', data)
             self.api_call('chat.postMessage', data=data)
         except Exception:
@@ -729,7 +761,7 @@ class SlackBackend(ErrBot):
             string
         """
         text = re.sub(r'<([^\|>]+)\|([^\|>]+)>', r'\2', text)
-        text = re.sub(r'<(http([^\>]+))>', r'\1', text)
+        text = re.sub(r'<(http([^>]+))>', r'\1', text)
 
         return text
 

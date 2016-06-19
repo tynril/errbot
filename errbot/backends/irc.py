@@ -57,18 +57,9 @@ try:
     import irc.connection
     from irc.client import ServerNotConnectedError, NickMask
     from irc.bot import SingleServerIRCBot
-except ImportError as _:
-    log.exception("Could not start the IRC backend")
-    log.fatal("""
-    If you intend to use the IRC backend please install the python irc package:
-    -> On debian-like systems
-    sudo apt-get install python-software-properties
-    sudo apt-get update
-    sudo apt-get install python-irc
-    -> On Gentoo
-    sudo emerge -av dev-python/irc
-    -> Generic
-    pip install irc
+except ImportError:
+    log.fatal("""You need the IRC support to use IRC, you can install it with:
+    pip install errbot[IRC]
     """)
     sys.exit(-1)
 
@@ -112,7 +103,9 @@ class IRCPerson(Person):
 
     @property
     def aclattr(self):
-        return aclpattern.format(nick=self._nickmask.nick, user=self._nickmask.user, host=self._nickmask.host)
+        return IRCBackend.aclpattern.format(nick=self._nickmask.nick,
+                                            user=self._nickmask.user,
+                                            host=self._nickmask.host)
 
     def __unicode__(self):
         return str(self._nickmask)
@@ -619,10 +612,11 @@ class IRCConnection(SingleServerIRCBot):
 
 
 class IRCBackend(ErrBot):
+    aclpattern = '{nick}!{user}@{host}'
 
     def __init__(self, config):
-        global aclpattern
-        aclpattern = getattr(config, 'IRC_ACL_PATTERN', '{nick}!{user}@{host}')
+        if 'IRC_ACL_PATTERN' in config:
+            IRCBackend.aclpattern = config['IRC_ACL_PATTERN']
 
         identity = config.BOT_IDENTITY
         nickname = identity['nickname']
